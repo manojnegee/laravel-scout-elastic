@@ -16,6 +16,13 @@ class ElasticsearchEngine extends Engine
      * @var string
      */
     protected $index;
+    
+    /**
+     * Elastic where the instance of Elastic|\Elasticsearch\Client is stored.
+     *
+     * @var object
+     */
+    protected $elastic;
 
     /**
      * Create a new engine instance.
@@ -154,6 +161,15 @@ class ElasticsearchEngine extends Engine
                 $options['numericFilters']);
         }
 
+        if ($builder->callback) {
+            return call_user_func(
+                $builder->callback,
+                $this->elastic,
+                $builder->query,
+                $params
+            );
+        }
+
         return $this->elastic->search($params);
     }
 
@@ -166,6 +182,10 @@ class ElasticsearchEngine extends Engine
     protected function filters(Builder $builder)
     {
         return collect($builder->wheres)->map(function ($value, $key) {
+            if (is_array($value)) {
+                return ['terms' => [$key => $value]];
+            }
+
             return ['match_phrase' => [$key => $value]];
         })->values()->all();
     }
@@ -184,22 +204,25 @@ class ElasticsearchEngine extends Engine
     /**
      * Map the given results to instances of the given model.
      *
+     * @param  \Laravel\Scout\Builder  $builder
      * @param  mixed  $results
      * @param  \Illuminate\Database\Eloquent\Model  $model
      * @return Collection
      */
-    public function map($results, $model)
+    public function map(Builder $builder, $results, $model)
     {
-        if (count($results['hits']['total']) === 0) {
+        if ($results['hits']['total'] === 0) {
             return Collection::make();
         }
 
         $keys = collect($results['hits']['hits'])
                         ->pluck('_id')->values()->all();
 
-        $models = $model->whereIn(
-            $model->getKeyName(), $keys
-        )->get()->keyBy($model->getKeyName());
+        $models = $model->getScoutModelsByIds(
+            $builder, $keys
+        )->keyBy(function ($model) {
+            return $model->getScoutKey();
+        });
 
         return collect($results['hits']['hits'])->map(function ($hit) use ($model, $models) {
             return isset($models[$hit['_id']]) ? $models[$hit['_id']] : null;
